@@ -17,6 +17,8 @@ pub(crate) mod private {
         fn set_head(&mut self, head: Option<Ptr<T>>);
         /// Simply set the tail pointer
         fn set_tail(&mut self, tail: Option<Ptr<T>>);
+        /// Invalidate cached element order whenever the list changes.
+        fn invalidate_order(&mut self) {}
     }
 
     pub trait LinkedList: ArenaObj + PartialEq {
@@ -185,6 +187,7 @@ where
             (*mark_ref).set_next(Some(*self));
         }
 
+        private::ContainsLinkedList::invalidate_order(&mut *container.deref_mut(ctx));
         let mut node = self.deref_mut(ctx);
         node.set_next(next);
         node.set_prev(Some(mark));
@@ -231,6 +234,7 @@ where
             (*mark_ref).set_prev(Some(*self));
         }
 
+        private::ContainsLinkedList::invalidate_order(&mut *container.deref_mut(ctx));
         let mut node = self.deref_mut(ctx);
         node.set_prev(prev);
         node.set_next(Some(mark));
@@ -247,6 +251,7 @@ where
             "LinkedList node must be unlinked before relinking"
         );
         let mut container_ref = container.deref_mut(ctx);
+        private::ContainsLinkedList::invalidate_order(&mut *container_ref);
         let head = container_ref.get_head();
         match head {
             Some(head) => {
@@ -272,6 +277,7 @@ where
             "LinkedList node must be unlinked before relinking"
         );
         let mut container_ref = container.deref_mut(ctx);
+        private::ContainsLinkedList::invalidate_order(&mut *container_ref);
         let tail = container_ref.get_tail();
         match tail {
             Some(tail) => {
@@ -304,6 +310,7 @@ where
             .deref(ctx)
             .get_container()
             .expect("LinkedList: Attempt to remove unlinked node");
+        private::ContainsLinkedList::invalidate_order(&mut *container.deref_mut(ctx));
         let next = self.deref(ctx).get_next();
         let prev = self.deref(ctx).get_prev();
         match next {

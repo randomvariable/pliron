@@ -3,7 +3,9 @@
 
 //! A [BasicBlock] is a list of [Operation]s.
 
+use crate::utils::table::HMap;
 use alloc::{string::String, vec, vec::Vec};
+use core::cell::RefCell;
 use thiserror::Error;
 
 use crate::{
@@ -89,6 +91,9 @@ impl Typed for BlockArgument {
 pub struct OpsInBlock {
     first: Option<Ptr<Operation>>,
     last: Option<Ptr<Operation>>,
+    positions: RefCell<Option<HMap<Ptr<Operation>, usize>>>,
+    #[cfg(test)]
+    indexed_operations: core::cell::Cell<usize>,
 }
 
 /// Links a [BasicBlock] with other blocks and the container [Region].
@@ -127,6 +132,33 @@ impl Named for BasicBlock {
 }
 
 impl BasicBlock {
+    /// Compare operation positions, indexing this block once between list mutations.
+    pub(crate) fn strictly_precedes(
+        &self,
+        ctx: &Context,
+        a: Ptr<Operation>,
+        b: Ptr<Operation>,
+    ) -> bool {
+        if self.ops_list.positions.borrow().is_none() {
+            let positions: HMap<_, _> = self
+                .iter(ctx)
+                .enumerate()
+                .map(|(index, op)| (op, index))
+                .collect();
+            #[cfg(test)]
+            self.ops_list
+                .indexed_operations
+                .set(self.ops_list.indexed_operations.get() + positions.len());
+            *self.ops_list.positions.borrow_mut() = Some(positions);
+        }
+        let positions = self.ops_list.positions.borrow();
+        let positions = positions.as_ref().expect("the block was indexed above");
+        match (positions.get(&a), positions.get(&b)) {
+            (Some(a), Some(b)) => a < b,
+            _ => false,
+        }
+    }
+
     /// Create a new Basic Block.
     pub fn new(
         ctx: &mut Context,
@@ -328,6 +360,10 @@ impl BasicBlock {
 }
 
 impl private::ContainsLinkedList<Operation> for BasicBlock {
+    fn invalidate_order(&mut self) {
+        self.ops_list.positions.get_mut().take();
+    }
+
     fn set_head(&mut self, head: Option<Ptr<Operation>>) {
         self.ops_list.first = head;
     }
@@ -491,6 +527,74 @@ impl Printable for BasicBlock {
             indented_nl(state),
             iter_with_sep(self.iter(ctx), ListSeparator::CharNewline(';')).print(ctx, state),
         )
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use crate::{builtin::ops::ForwardRefOp, graph::strictly_precedes_in_block, op::Op};
+
+    fn append(ctx: &mut Context, block: Ptr<BasicBlock>) -> Ptr<Operation> {
+        let op = ForwardRefOp::new(ctx).get_operation();
+        op.insert_at_back(block, ctx);
+        op
+    }
+
+    #[test]
+    fn indexing_work_scales_linearly_with_block_size() {
+        for size in [128, 256, 512, 1024] {
+            let ctx = &mut Context::new();
+            let block = BasicBlock::new(ctx, None, vec![]);
+            let ops: Vec<_> = (0..size).map(|_| append(ctx, block)).collect();
+            for &op in ops.iter().skip(1) {
+                assert!(strictly_precedes_in_block(ctx, ops[0], op));
+                assert!(!strictly_precedes_in_block(ctx, op, ops[0]));
+            }
+            assert_eq!(
+                block.deref(ctx).ops_list.indexed_operations.get(),
+                size,
+                "all repeated order queries index each operation only once"
+            );
+        }
+    }
+
+    #[test]
+    fn mutations_invalidate_both_source_and_destination_order() {
+        let ctx = &mut Context::new();
+        let block = BasicBlock::new(ctx, None, vec![]);
+        let other = BasicBlock::new(ctx, None, vec![]);
+        let a = append(ctx, block);
+        let b = append(ctx, block);
+        let c = append(ctx, block);
+        assert!(strictly_precedes_in_block(ctx, a, c));
+        let tail = append(ctx, block);
+        assert!(strictly_precedes_in_block(ctx, c, tail));
+        let inserted = ForwardRefOp::new(ctx).get_operation();
+        inserted.insert_before(ctx, b);
+        assert!(strictly_precedes_in_block(ctx, a, inserted));
+        assert!(strictly_precedes_in_block(ctx, inserted, b));
+        c.unlink(ctx);
+        c.insert_after(ctx, a);
+        assert!(strictly_precedes_in_block(ctx, c, inserted));
+        assert!(!strictly_precedes_in_block(ctx, b, c));
+        b.unlink(ctx);
+        b.insert_at_front(block, ctx);
+        assert!(strictly_precedes_in_block(ctx, b, a));
+        b.unlink(ctx);
+        b.insert_at_back(block, ctx);
+        assert!(strictly_precedes_in_block(ctx, a, b));
+        assert!(!strictly_precedes_in_block(ctx, b, b));
+        let d = append(ctx, other);
+        let e = append(ctx, other);
+        assert!(strictly_precedes_in_block(ctx, d, e));
+        c.unlink(ctx);
+        c.insert_before(ctx, e);
+        assert!(strictly_precedes_in_block(ctx, d, c));
+        assert!(!strictly_precedes_in_block(ctx, a, c));
+        c.unlink(ctx);
+        assert!(!strictly_precedes_in_block(ctx, c, d));
+        assert!(!strictly_precedes_in_block(ctx, d, c));
     }
 }
 
