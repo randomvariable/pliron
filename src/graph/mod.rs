@@ -176,14 +176,10 @@ pub fn strictly_precedes_in_block(ctx: &Context, a: Ptr<Operation>, b: Ptr<Opera
         return false;
     }
 
-    let mut cursor = a.deref(ctx).get_next();
-    while let Some(op) = cursor {
-        if op == b {
-            return true;
-        }
-        cursor = op.deref(ctx).get_next();
-    }
-    false
+    let Some(block) = a.deref(ctx).get_parent_block() else {
+        return false;
+    };
+    block.deref(ctx).strictly_precedes(ctx, a, b)
 }
 
 /// Returns the ancestor operation of `op` contained in `target_region`, or returns `None`
