@@ -41,6 +41,7 @@ where
     // An empty tree has no root.
     root: Option<G::Node>,
     dominators_map: IMap<G::Node, DomTreeNode<G, GraphContext>>,
+    intervals: HMap<G::Node, (usize, usize)>,
 }
 
 /// The post-dominator tree for a control-flow-graph.
@@ -172,6 +173,7 @@ where
         return DomTree {
             root: None,
             dominators_map: IMap::default(),
+            intervals: HMap::default(),
         };
     };
 
@@ -243,9 +245,10 @@ where
         }
     }
 
-    let mut dom_tree = DomTree {
+    let mut dom_tree: DomTree<G, GraphContext> = DomTree {
         root: Some(entry_node),
         dominators_map: IMap::default(),
+        intervals: HMap::default(),
     };
     let entry = DomTreeNode {
         parent: None,
@@ -271,6 +274,21 @@ where
         parent_dom_node.children.push(child_node.clone())
     }
 
+    // Iterative DFS avoids a call-stack proportional to the dominator-tree depth.
+    let mut stack = vec![(rpo[0].clone(), false)];
+    let mut clock = 0;
+    while let Some((node, exiting)) = stack.pop() {
+        if exiting {
+            dom_tree.intervals.get_mut(&node).unwrap().1 = clock;
+        } else {
+            dom_tree.intervals.insert(node.clone(), (clock, 0));
+            clock += 1;
+            stack.push((node.clone(), true));
+            for child in dom_tree.dominators_map[&node].children.iter().rev() {
+                stack.push((child.clone(), false));
+            }
+        }
+    }
     dom_tree
 }
 
@@ -336,17 +354,15 @@ where
     /// Does `dominator` dominate `dominatee`?
     /// Each node dominates itself. An unreachable node has no other dominators.
     pub fn dominates(&self, dominator: &G::Node, dominatee: &G::Node) -> bool {
-        let mut node_opt = Some(dominatee.clone());
-        while let Some(node) = node_opt {
-            if node == *dominator {
-                return true;
-            }
-            node_opt = self
-                .dominators_map
-                .get(&node)
-                .and_then(|node| node.parent.clone());
+        if dominator == dominatee {
+            return true;
         }
-        false
+        match (self.intervals.get(dominator), self.intervals.get(dominatee)) {
+            (Some(&(start, end)), Some(&(other_start, _))) => {
+                start <= other_start && other_start < end
+            }
+            _ => false,
+        }
     }
 
     /// Nearest common dominator of `node1` and `node2`.
@@ -851,6 +867,33 @@ mod tests {
                 }"#]]
         .assert_eq(&output);
         assert_eq!(state.current_indent(), 4);
+    }
+
+    #[test]
+    fn dominance_queries_on_deep_tree_match_parent_walk() {
+        let count = 2048;
+        let ctx: Vec<Node> = (0..count)
+            .map(|index| {
+                if index + 1 < count {
+                    n(&[index + 1])
+                } else {
+                    n(&[])
+                }
+            })
+            .collect();
+        let dom = compute_dominator_tree(&ctx, &ArenaGraph);
+        assert_eq!(dom.intervals.len(), count);
+        for dominator in 0..count {
+            for dominatee in 0..count {
+                assert_eq!(
+                    dom.dominates(&dominator, &dominatee),
+                    dominator <= dominatee
+                );
+            }
+        }
+        assert!(dom.dominates(&count, &count));
+        assert!(!dom.dominates(&0, &count));
+        assert!(!dom.dominates(&count, &0));
     }
 
     #[test]
