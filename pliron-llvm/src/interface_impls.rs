@@ -49,9 +49,9 @@ use crate::{
         ExtractElementOp, ExtractValueOp, FAddOp, FCmpOp, FDivOp, FMulOp, FNegOp, FPExtOp,
         FPToSIOp, FPToUIOp, FPTruncOp, FRemOp, FSubOp, FreezeOp, FuncOp, GetElementPtrOp, ICmpOp,
         InsertElementOp, InsertValueOp, IntToPtrOp, LShrOp, LoadOp, MulOp, OrOp, PoisonOp,
-        PtrToIntOp, SDivOp, SExtOp, SIToFPOp, SRemOp, SelectOp, ShlOp, ShuffleVectorOp, StoreOp,
-        SubOp, SwitchOp, TruncOp, UDivOp, UIToFPOp, URemOp, UndefOp, UnreachableOp, XorOp, ZExtOp,
-        ZeroOp,
+        PtrToIntOp, ReturnOp, SDivOp, SExtOp, SIToFPOp, SRemOp, SelectOp, ShlOp, ShuffleVectorOp,
+        StoreOp, SubOp, SwitchOp, TruncOp, UDivOp, UIToFPOp, URemOp, UndefOp, UnreachableOp, XorOp,
+        ZExtOp, ZeroOp,
     },
     types::VectorType,
 };
@@ -101,8 +101,10 @@ impl PromotableAllocationInterface for AllocaOp {
 #[op_interface_impl]
 impl PromotableOpInterface for StoreOp {
     fn promotion_kind(&self, ctx: &Context, alloc_info: &AllocInfo) -> PromotableOpKind {
-        if self.get_operand_address(ctx) == alloc_info.ptr {
-            PromotableOpKind::Store(self.get_operand_value(ctx))
+        let value = self.get_operand_value(ctx);
+        // A store of the pointer itself lets the pointer escape.
+        if self.get_operand_address(ctx) == alloc_info.ptr && value != alloc_info.ptr {
+            PromotableOpKind::Store(value)
         } else {
             PromotableOpKind::NonPromotableUse
         }
@@ -154,13 +156,13 @@ impl PromotableOpInterface for LoadOp {
     }
 }
 
-// Implement [SideEffects] with `has_side_effects` returning `false`
+// Implement [SideEffects] with `has_self_side_effects` returning `false`
 macro_rules! impl_side_effects_false {
   ($($op:ty),+ $(,)?) => {
     $(
       #[op_interface_impl]
       impl SideEffects for $op {
-        fn has_side_effects(&self, _ctx: &Context) -> bool {
+        fn has_self_side_effects(&self, _ctx: &Context) -> bool {
           false
         }
       }
@@ -221,6 +223,9 @@ impl_side_effects_false!(
     FCmpOp,
     GetElementPtrOp,
 );
+
+// Branch and return terminators transfer control, but have no side effects of their own.
+impl_side_effects_false!(BrOp, CondBrOp, SwitchOp, ReturnOp);
 
 #[op_interface_impl]
 impl BlockArgRemoval for FuncOp {
